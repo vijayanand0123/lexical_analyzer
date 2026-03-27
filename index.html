@@ -52,6 +52,7 @@
     .badge.DELIMITER{color:var(--pink);background:rgba(244,114,182,.1);}
     .badge.COMMENT{color:var(--muted);background:rgba(107,114,128,.1);}
     .badge.PREPROCESSOR{color:var(--teal);background:rgba(20,184,166,.1);}
+    .badge.UNKNOWN{color:var(--red);background:rgba(239,68,68,.1);}
     footer{margin-top:12px;padding-top:12px;border-top:1px solid var(--border);display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;color:var(--muted);font-size:12px;}
     footer strong{color:var(--text);}
   </style>
@@ -61,7 +62,7 @@
   <header>
     <div class="pill">⚡ Prime Lexer</div>
     <h1>Lexer — Tokenize Source Code</h1>
-    <p class="sub">C or Python source → token stream. Parser/semantic/optimizer/ASM removed for a focused lexical analyser.</p>
+    <p class="sub">C or Python source → token stream. Auto-detects language and produces a correct token stream.</p>
   </header>
 
   <div class="card">
@@ -100,122 +101,271 @@ int main() {
 
 <script>
 /* ── KEYWORDS ── */
-const C_KEYWORDS = new Set(['int','float','char','double','void','if','else','for','while','do',
-  'return','break','continue','switch','case','default','struct','typedef','unsigned','signed',
-  'long','short','static','const','include','define']);
-const PY_KEYWORDS = new Set(['def','return','if','elif','else','for','while','in','range','print',
-  'and','or','not','True','False','None','import','from','pass','break','continue','class','lambda',
-  'try','except','finally','with','as','is','del','yield','global','nonlocal']);
+const C_KEYWORDS = new Set([
+  'auto','break','case','char','const','continue','default','do','double',
+  'else','enum','extern','float','for','goto','if','inline','int','long',
+  'register','return','short','signed','sizeof','static','struct','switch',
+  'typedef','union','unsigned','void','volatile','while',
+  /* common preprocessor identifiers treated as keywords in detection */
+  'include','define','ifndef','ifdef','endif','pragma'
+]);
 
-function detectLang(src){
-  if(/^\s*#include|^\s*int\s+main\s*\(|printf\s*\(/.test(src)) return 'c';
-  if(/def\s+\w+\s*\(|print\s*\(|:\s*$/.test(src)) return 'py';
-  return 'c';
+const PY_KEYWORDS = new Set([
+  'False','None','True','and','as','assert','async','await','break','class',
+  'continue','def','del','elif','else','except','finally','for','from',
+  'global','if','import','in','is','lambda','nonlocal','not','or','pass',
+  'raise','return','try','while','with','yield'
+]);
+
+/* ── LANGUAGE DETECTION ── */
+function detectLang(src) {
+  // Strong C signals
+  if (/^\s*#\s*include\b/.test(src)) return 'c';
+  if (/\bint\s+main\s*\(/.test(src)) return 'c';
+  if (/\bprintf\s*\(/.test(src)) return 'c';
+  if (/\bvoid\s+\w+\s*\(/.test(src)) return 'c';
+  // Strong Python signals
+  if (/^\s*def\s+\w+\s*\(/m.test(src)) return 'py';
+  if (/^\s*import\s+\w/m.test(src)) return 'py';
+  if (/^\s*from\s+\w+\s+import\b/m.test(src)) return 'py';
+  if (/:\s*\n/.test(src)) return 'py';
+  return 'c'; // default
 }
 
-/* ── LEXER ONLY ── */
-function tokenize(src){
+/* ── LEXER ── */
+function tokenize(src) {
   const lang = detectLang(src);
-  const KEYWORDS = lang==='py' ? PY_KEYWORDS : C_KEYWORDS;
+  const KEYWORDS = lang === 'py' ? PY_KEYWORDS : C_KEYWORDS;
   const tokens = [];
-  let i=0, line=1, col=1;
-  const addTok=(type,val,ln,cl)=>tokens.push({type,value:val,line:ln,col:cl});
+  let i = 0, line = 1, col = 1;
 
-  while(i<src.length){
+  function addTok(type, val, ln, cl) {
+    tokens.push({ type, value: val, line: ln, col: cl });
+  }
+
+  // Advance i and update line/col tracking
+  function advance(count) {
+    for (let k = 0; k < count; k++) {
+      if (src[i] === '\n') { line++; col = 1; }
+      else { col++; }
+      i++;
+    }
+  }
+
+  while (i < src.length) {
+    const startLine = line;
+    const startCol  = col;
     const ch = src[i];
-    const startCol = col, startLine = line;
 
-    // handle CR or CRLF as newline
-    if(ch==='\r'){
-      if(src[i+1]==='\n') i++;
-      addTok('NEWLINE','\\n',line,col); line++; col=1; i++; continue;
+    // ── Newlines / carriage returns (skip, just track position)
+    if (ch === '\r') {
+      i++;
+      if (src[i] === '\n') i++;
+      line++; col = 1;
+      continue;
     }
-    if(ch==='\n'){addTok('NEWLINE','\\n',line,col);line++;col=1;i++;continue;}
+    if (ch === '\n') {
+      i++; line++; col = 1;
+      continue;
+    }
 
-    if(/\s/.test(ch)){col++;i++;continue;}
+    // ── Other whitespace
+    if (ch === ' ' || ch === '\t') {
+      i++; col++;
+      continue;
+    }
 
-    if(ch==='#'){
-      let j=i; while(j<src.length && src[j]!=='\n' && src[j]!=='\r') j++;
-      addTok('PREPROCESSOR',src.slice(i,j),startLine,startCol);
-      col+=j-i; i=j; continue;
-    }
-    if(src[i]==='/' && src[i+1]==='/'){
-      let j=i; while(j<src.length && src[j]!=='\n' && src[j]!=='\r') j++;
-      addTok('COMMENT',src.slice(i,j),startLine,startCol);
-      col+=j-i; i=j; continue;
-    }
-    if(ch==='#' || (lang==='py' && ch==='#')){
-      let j=i; while(j<src.length && src[j]!=='\n' && src[j]!=='\r') j++;
-      addTok('COMMENT',src.slice(i,j),startLine,startCol);
-      col+=j-i; i=j; continue;
-    }
-    if(src[i]==='/' && src[i+1]==='*'){
-      let j=i+2;
-      while(j<src.length-1 && !(src[j]==='*' && src[j+1]==='/')) {
-        if(src[j]==='\n'){line++;col=1;} else if(src[j]==='\r'){ if(src[j+1]==='\n') j++; line++; col=1; }
-        else col++;
+    // ── Block comment  /* ... */  (C only, but handle for both)
+    if (src[i] === '/' && src[i + 1] === '*') {
+      let j = i + 2;
+      while (j < src.length - 1 && !(src[j] === '*' && src[j + 1] === '/')) {
+        if (src[j] === '\n') { line++; col = 1; }
+        else { col++; }
         j++;
       }
-      j+=2; col+=2;
-      addTok('COMMENT',src.slice(i,j),startLine,startCol);
-      i=j; continue;
+      j += 2; // skip */
+      const raw = src.slice(i, j);
+      addTok('COMMENT', raw, startLine, startCol);
+      col += 2; i = j;
+      continue;
     }
-    if(ch==='"' || ch==="'"){
-      const q=ch; let j=i+1, s=q;
-      while(j<src.length && src[j]!==q){
-        if(src[j]==='\\') {s+=src[j]+src[j+1];j+=2;}
-        else {s+=src[j];j++;}
+
+    // ── Line comment  // ...  (C/C++)
+    if (src[i] === '/' && src[i + 1] === '/') {
+      let j = i;
+      while (j < src.length && src[j] !== '\n' && src[j] !== '\r') j++;
+      addTok('COMMENT', src.slice(i, j), startLine, startCol);
+      col += j - i; i = j;
+      continue;
+    }
+
+    // ── Python line comment  # ...
+    if (lang === 'py' && ch === '#') {
+      let j = i;
+      while (j < src.length && src[j] !== '\n' && src[j] !== '\r') j++;
+      addTok('COMMENT', src.slice(i, j), startLine, startCol);
+      col += j - i; i = j;
+      continue;
+    }
+
+    // ── C preprocessor directive  # ...  (only at start of (logical) line)
+    if (lang === 'c' && ch === '#') {
+      let j = i;
+      // Preprocessor lines can be continued with backslash-newline
+      while (j < src.length) {
+        if (src[j] === '\\' && (src[j + 1] === '\n' || src[j + 1] === '\r')) {
+          // continuation — skip the backslash and newline
+          j += 2;
+          if (src[j - 1] === '\r' && src[j] === '\n') j++;
+          line++; col = 1;
+        } else if (src[j] === '\n' || src[j] === '\r') {
+          break;
+        } else {
+          j++;
+        }
       }
-      s+=q; j++;
-      addTok('STRING',s,startLine,startCol);
-      col+=s.length; i=j; continue;
+      addTok('PREPROCESSOR', src.slice(i, j), startLine, startCol);
+      col += j - i; i = j;
+      continue;
     }
-    if(/\d/.test(ch) || (ch==='.' && /\d/.test(src[i+1]))){
-      let j=i, isFloat=false;
-      while(j<src.length && /[\d]/.test(src[j])) j++;
-      if(j<src.length && src[j]==='.'){isFloat=true;j++;while(j<src.length && /\d/.test(src[j])) j++;}
-      if(j<src.length && /[eE]/.test(src[j])){isFloat=true;j++; if(/[+-]/.test(src[j]))j++; while(j<src.length&&/\d/.test(src[j]))j++;}
-      const num=src.slice(i,j);
-      addTok(isFloat?'FLOAT':'INTEGER',num,startLine,startCol);
-      col+=num.length; i=j; continue;
+
+    // ── Python triple-quoted strings  """ or '''
+    if (lang === 'py' && (src.slice(i, i + 3) === '"""' || src.slice(i, i + 3) === "'''")) {
+      const q3 = src.slice(i, i + 3);
+      let j = i + 3;
+      while (j < src.length - 2 && src.slice(j, j + 3) !== q3) {
+        if (src[j] === '\n') { line++; col = 1; }
+        else { col++; }
+        j++;
+      }
+      j += 3; // closing triple quote
+      addTok('STRING', src.slice(i, j), startLine, startCol);
+      col += 3; i = j;
+      continue;
     }
-    if(/[a-zA-Z_]/.test(ch)){
-      let j=i;
-      while(j<src.length && /[a-zA-Z0-9_]/.test(src[j])) j++;
-      const word=src.slice(i,j);
-      addTok(KEYWORDS.has(word)?'KEYWORD':'IDENTIFIER',word,startLine,startCol);
-      col+=word.length; i=j; continue;
+
+    // ── Single / double quoted string (handles escape sequences, single line)
+    if (ch === '"' || ch === "'") {
+      const q = ch;
+      let j = i + 1;
+      let s = q;
+      while (j < src.length && src[j] !== q && src[j] !== '\n' && src[j] !== '\r') {
+        if (src[j] === '\\' && j + 1 < src.length) {
+          s += src[j] + src[j + 1];
+          j += 2;
+        } else {
+          s += src[j];
+          j++;
+        }
+      }
+      if (j < src.length && src[j] === q) { s += q; j++; }
+      addTok('STRING', s, startLine, startCol);
+      col += j - i; i = j;
+      continue;
     }
-    const two=src.slice(i,i+2);
-    if(['==','!=','<=','>=','&&','||','++','--','+=','-=','*=','/=','->','**'].includes(two)){
-      addTok('OPERATOR',two,startLine,startCol);col+=2;i+=2;continue;
+
+    // ── Numbers (integer and float)
+    if (/[0-9]/.test(ch) || (ch === '.' && /[0-9]/.test(src[i + 1] || ''))) {
+      let j = i;
+      let isFloat = false;
+
+      // Hex literal 0x...
+      if (src[j] === '0' && (src[j + 1] === 'x' || src[j + 1] === 'X')) {
+        j += 2;
+        while (j < src.length && /[0-9a-fA-F]/.test(src[j])) j++;
+      } else {
+        // Decimal digits before potential dot
+        while (j < src.length && /[0-9]/.test(src[j])) j++;
+        // Fractional part
+        if (j < src.length && src[j] === '.' && /[0-9]/.test(src[j + 1] || '')) {
+          isFloat = true; j++;
+          while (j < src.length && /[0-9]/.test(src[j])) j++;
+        }
+        // Exponent
+        if (j < src.length && /[eE]/.test(src[j])) {
+          isFloat = true; j++;
+          if (j < src.length && /[+\-]/.test(src[j])) j++;
+          while (j < src.length && /[0-9]/.test(src[j])) j++;
+        }
+        // Suffix (L, U, f, etc.)
+        while (j < src.length && /[uUlLfF]/.test(src[j])) { if (/[fF]/.test(src[j])) isFloat = true; j++; }
+      }
+
+      addTok(isFloat ? 'FLOAT' : 'INTEGER', src.slice(i, j), startLine, startCol);
+      col += j - i; i = j;
+      continue;
     }
-    if('+-*/%=<>!&|^~'.includes(ch)){
-      addTok('OPERATOR',ch,startLine,startCol);col++;i++;continue;
+
+    // ── Identifiers and keywords
+    if (/[a-zA-Z_]/.test(ch)) {
+      let j = i;
+      while (j < src.length && /[a-zA-Z0-9_]/.test(src[j])) j++;
+      const word = src.slice(i, j);
+      addTok(KEYWORDS.has(word) ? 'KEYWORD' : 'IDENTIFIER', word, startLine, startCol);
+      col += j - i; i = j;
+      continue;
     }
-    if('(){}[];:,.'.includes(ch)){
-      addTok('DELIMITER',ch,startLine,startCol);col++;i++;continue;
+
+    // ── Multi-character operators (check longest match first)
+    const three = src.slice(i, i + 3);
+    const TRIPLE_OPS = ['<<=', '>>=', '...'];
+    if (TRIPLE_OPS.includes(three)) {
+      addTok('OPERATOR', three, startLine, startCol);
+      col += 3; i += 3; continue;
     }
-    addTok('UNKNOWN',ch,startLine,startCol);col++;i++;
+
+    const two = src.slice(i, i + 2);
+    const DOUBLE_OPS = [
+      '==','!=','<=','>=','&&','||','++','--',
+      '+=','-=','*=','/=','%=','&=','|=','^=',
+      '->','**','>>', '<<', '::'
+    ];
+    if (DOUBLE_OPS.includes(two)) {
+      addTok('OPERATOR', two, startLine, startCol);
+      col += 2; i += 2; continue;
+    }
+
+    // ── Single-character operators
+    if ('+-*/%=<>!&|^~'.includes(ch)) {
+      addTok('OPERATOR', ch, startLine, startCol);
+      col++; i++; continue;
+    }
+
+    // ── Delimiters
+    if ('(){}[];:,.\\_@'.includes(ch)) {
+      addTok('DELIMITER', ch, startLine, startCol);
+      col++; i++; continue;
+    }
+
+    // ── Unknown / unrecognised character
+    addTok('UNKNOWN', ch, startLine, startCol);
+    col++; i++;
   }
+
   return tokens;
 }
 
 /* ── RENDER ── */
 const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 
-function render(tokens){
-  const filtered = tokens.filter(t=>t.type!=='NEWLINE');
+function render(tokens) {
   const counts = {};
-  for(const t of filtered) counts[t.type] = (counts[t.type]||0)+1;
+  for (const t of tokens) counts[t.type] = (counts[t.type] || 0) + 1;
+
   document.getElementById('tok-sum').innerHTML =
-    Object.entries(counts).map(([k,v])=>`<span class="badge ${esc(k)}">${esc(k)} <b>${v}</b></span>`).join('') || '<span class="badge">No tokens</span>';
+    Object.entries(counts)
+      .map(([k, v]) => `<span class="badge ${esc(k)}">${esc(k)} <b>${v}</b></span>`)
+      .join('') || '<span class="badge">No tokens</span>';
 
   const tb = document.getElementById('tok-tb');
-  if(!filtered.length){tb.innerHTML='<tr><td colspan="5" class="empty">No tokens.</td></tr>'; return;}
-  tb.innerHTML = filtered.map((t,i)=>`
-    <tr class="type-${esc(t.type)}">
-      <td class="val">${i+1}</td>
+  if (!tokens.length) {
+    tb.innerHTML = '<tr><td colspan="5" class="empty">No tokens found.</td></tr>';
+    return;
+  }
+
+  tb.innerHTML = tokens.map((t, idx) => `
+    <tr>
+      <td class="val">${idx + 1}</td>
       <td><span class="badge ${esc(t.type)}">${esc(t.type)}</span></td>
       <td class="val">${esc(t.value)}</td>
       <td class="val">${t.line}</td>
@@ -223,46 +373,65 @@ function render(tokens){
     </tr>`).join('');
 }
 
-/* ── UI ── */
-const status = document.getElementById('status');
-document.getElementById('run').addEventListener('click',()=>{
+/* ── UI EVENT HANDLERS ── */
+const statusEl = document.getElementById('status');
+
+document.getElementById('run').addEventListener('click', () => {
   const code = document.getElementById('code').value;
-  if(!code.trim()){status.textContent='No code to tokenize.';return;}
-  status.textContent='Lexing…';
-  try{
+  if (!code.trim()) { statusEl.textContent = 'No code to tokenize.'; return; }
+  statusEl.textContent = 'Lexing…';
+  try {
     const tokens = tokenize(code);
     render(tokens);
-    status.textContent = `✅ ${tokens.length} tokens (${tokens.filter(t=>t.type!=='NEWLINE').length} non-newline)`;
-  }catch(e){
-    status.textContent = '❌ Error: '+e.message;
+    const lang = detectLang(code);
+    statusEl.textContent = `✅ ${tokens.length} tokens — language: ${lang.toUpperCase()}`;
+  } catch (e) {
+    statusEl.textContent = '❌ Error: ' + e.message;
+    console.error(e);
   }
 });
 
-document.getElementById('clear-btn').addEventListener('click',()=>{
-  document.getElementById('code').value='';
-  document.getElementById('tok-sum').innerHTML='';
-  document.getElementById('tok-tb').innerHTML='<tr><td colspan="5" class="empty">Run the lexer.</td></tr>';
-  status.textContent='Ready';
+document.getElementById('clear-btn').addEventListener('click', () => {
+  document.getElementById('code').value = '';
+  document.getElementById('tok-sum').innerHTML = '';
+  document.getElementById('tok-tb').innerHTML = '<tr><td colspan="5" class="empty">Run the lexer.</td></tr>';
+  statusEl.textContent = 'Ready';
 });
 
-document.getElementById('demo-c').addEventListener('click',()=>{
-  document.getElementById('code').value=`#include <stdio.h>
+document.getElementById('demo-c').addEventListener('click', () => {
+  document.getElementById('code').value =
+`#include <stdio.h>
 
+/* Simple arithmetic demo */
 int main() {
-  int x = 2 + 3;
-  printf("x = %d", x);
-  return 0;
+    int x = 2 + 3;
+    float y = 3.14 * 2.0;
+    char *msg = "hello";
+    if (x > 4) {
+        printf("x = %d\\n", x);
+    }
+    return 0;
 }`;
   document.getElementById('run').click();
 });
 
-document.getElementById('demo-py').addEventListener('click',()=>{
-  document.getElementById('code').value=`# Python demo
+document.getElementById('demo-py').addEventListener('click', () => {
+  document.getElementById('code').value =
+`# Python demo
 def add(a, b):
     return a + b
 
 x = add(2, 3)
-print("sum =", x)`;
+y = 3.14 * x
+name = "world"
+print(f"sum = {x}, pi_approx = {y}")
+
+if x > 4:
+    print("big number")
+elif x == 4:
+    print("exactly four")
+else:
+    print("small")`;
   document.getElementById('run').click();
 });
 </script>
