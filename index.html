@@ -94,7 +94,7 @@ int main() {
 
   <footer>
     <div>Name: <strong>Vijay Anand</strong></div>
-    <div>Registration Number: <strong>RA2311003050021</strong></div>
+    <div>Registration Number: <strong>RA2311003050380</strong></div>
   </footer>
 </div>
 
@@ -125,19 +125,77 @@ function tokenize(src){
     const ch = src[i];
     const startCol = col, startLine = line;
 
-    if(ch==='\\n'){addTok('NEWLINE','\\n',line,col);line++;col=1;i++;continue;}
+    // handle CR or CRLF as newline
+    if(ch==='\r'){
+      if(src[i+1]==='\n') i++;
+      addTok('NEWLINE','\\n',line,col); line++; col=1; i++; continue;
+    }
+    if(ch==='\n'){addTok('NEWLINE','\\n',line,col);line++;col=1;i++;continue;}
+
     if(/\s/.test(ch)){col++;i++;continue;}
-    if(ch==='#'){let j=i; while(j<src.length && src[j]!=='\\n') j++; addTok('PREPROCESSOR',src.slice(i,j),startLine,startCol); col+=j-i; i=j; continue;}
-    if(src[i]==='/' && src[i+1]==='/'){let j=i; while(j<src.length && src[j]!=='\\n') j++; addTok('COMMENT',src.slice(i,j),startLine,startCol); col+=j-i; i=j; continue;}
-    if(ch==='#' || (lang==='py' && ch==='#')){let j=i; while(j<src.length && src[j]!=='\\n') j++; addTok('COMMENT',src.slice(i,j),startLine,startCol); col+=j-i; i=j; continue;}
-    if(src[i]==='/' && src[i+1]==='*'){let j=i+2; while(j<src.length-1 && !(src[j]==='*' && src[j+1]==='/')) { if(src[j]==='\\n'){line++;col=1;} else col++; j++; } j+=2; col+=2; addTok('COMMENT',src.slice(i,j),startLine,startCol); i=j; continue;}
-    if(ch==='"' || ch==="'"){const q=ch; let j=i+1, s=q; while(j<src.length && src[j]!==q){ if(src[j]==='\\\\'){s+=src[j]+src[j+1];j+=2;} else {s+=src[j];j++;} } s+=q; j++; addTok('STRING',s,startLine,startCol); col+=s.length; i=j; continue;}
-    if(/\d/.test(ch) || (ch==='.' && /\d/.test(src[i+1]))){let j=i, isFloat=false; while(j<src.length && /[\d]/.test(src[j])) j++; if(j<src.length && src[j]==='.'){isFloat=true;j++;while(j<src.length && /\d/.test(src[j])) j++;} if(j<src.length && /[eE]/.test(src[j])){isFloat=true;j++; if(/[+-]/.test(src[j]))j++; while(j<src.length&&/\d/.test(src[j]))j++;} const num=src.slice(i,j); addTok(isFloat?'FLOAT':'INTEGER',num,startLine,startCol); col+=num.length; i=j; continue;}
-    if(/[a-zA-Z_]/.test(ch)){let j=i; while(j<src.length && /[a-zA-Z0-9_]/.test(src[j])) j++; const word=src.slice(i,j); addTok(KEYWORDS.has(word)?'KEYWORD':'IDENTIFIER',word,startLine,startCol); col+=word.length; i=j; continue;}
+
+    if(ch==='#'){
+      let j=i; while(j<src.length && src[j]!=='\n' && src[j]!=='\r') j++;
+      addTok('PREPROCESSOR',src.slice(i,j),startLine,startCol);
+      col+=j-i; i=j; continue;
+    }
+    if(src[i]==='/' && src[i+1]==='/'){
+      let j=i; while(j<src.length && src[j]!=='\n' && src[j]!=='\r') j++;
+      addTok('COMMENT',src.slice(i,j),startLine,startCol);
+      col+=j-i; i=j; continue;
+    }
+    if(ch==='#' || (lang==='py' && ch==='#')){
+      let j=i; while(j<src.length && src[j]!=='\n' && src[j]!=='\r') j++;
+      addTok('COMMENT',src.slice(i,j),startLine,startCol);
+      col+=j-i; i=j; continue;
+    }
+    if(src[i]==='/' && src[i+1]==='*'){
+      let j=i+2;
+      while(j<src.length-1 && !(src[j]==='*' && src[j+1]==='/')) {
+        if(src[j]==='\n'){line++;col=1;} else if(src[j]==='\r'){ if(src[j+1]==='\n') j++; line++; col=1; }
+        else col++;
+        j++;
+      }
+      j+=2; col+=2;
+      addTok('COMMENT',src.slice(i,j),startLine,startCol);
+      i=j; continue;
+    }
+    if(ch==='"' || ch==="'"){
+      const q=ch; let j=i+1, s=q;
+      while(j<src.length && src[j]!==q){
+        if(src[j]==='\\') {s+=src[j]+src[j+1];j+=2;}
+        else {s+=src[j];j++;}
+      }
+      s+=q; j++;
+      addTok('STRING',s,startLine,startCol);
+      col+=s.length; i=j; continue;
+    }
+    if(/\d/.test(ch) || (ch==='.' && /\d/.test(src[i+1]))){
+      let j=i, isFloat=false;
+      while(j<src.length && /[\d]/.test(src[j])) j++;
+      if(j<src.length && src[j]==='.'){isFloat=true;j++;while(j<src.length && /\d/.test(src[j])) j++;}
+      if(j<src.length && /[eE]/.test(src[j])){isFloat=true;j++; if(/[+-]/.test(src[j]))j++; while(j<src.length&&/\d/.test(src[j]))j++;}
+      const num=src.slice(i,j);
+      addTok(isFloat?'FLOAT':'INTEGER',num,startLine,startCol);
+      col+=num.length; i=j; continue;
+    }
+    if(/[a-zA-Z_]/.test(ch)){
+      let j=i;
+      while(j<src.length && /[a-zA-Z0-9_]/.test(src[j])) j++;
+      const word=src.slice(i,j);
+      addTok(KEYWORDS.has(word)?'KEYWORD':'IDENTIFIER',word,startLine,startCol);
+      col+=word.length; i=j; continue;
+    }
     const two=src.slice(i,i+2);
-    if(['==','!=','<=','>=','&&','||','++','--','+=','-=','*=','/=','->','**'].includes(two)){addTok('OPERATOR',two,startLine,startCol);col+=2;i+=2;continue;}
-    if('+-*/%=<>!&|^~'.includes(ch)){addTok('OPERATOR',ch,startLine,startCol);col++;i++;continue;}
-    if('(){}[];:,.'.includes(ch)){addTok('DELIMITER',ch,startLine,startCol);col++;i++;continue;}
+    if(['==','!=','<=','>=','&&','||','++','--','+=','-=','*=','/=','->','**'].includes(two)){
+      addTok('OPERATOR',two,startLine,startCol);col+=2;i+=2;continue;
+    }
+    if('+-*/%=<>!&|^~'.includes(ch)){
+      addTok('OPERATOR',ch,startLine,startCol);col++;i++;continue;
+    }
+    if('(){}[];:,.'.includes(ch)){
+      addTok('DELIMITER',ch,startLine,startCol);col++;i++;continue;
+    }
     addTok('UNKNOWN',ch,startLine,startCol);col++;i++;
   }
   return tokens;
